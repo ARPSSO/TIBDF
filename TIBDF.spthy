@@ -1,0 +1,326 @@
+theory TIBDF
+
+begin
+
+builtins: diffie-hellman
+functions: sign/3, pk/1, verify/3, true/0, false/0
+
+/* PS Signature Model */
+functions: randomize/3,invrandomize/2
+equations: verify(sign(m, r, sk), m, pk(sk)) = true
+equations: invrandomize(randomize(sign(m, r, sk), k, t), t) = sign(m, k, sk)
+
+/* Channel Rules */
+rule Hello_Browser_TLS:
+    [ !St_Browser_Init(~browserID, $User), Fr(~client_ID_TLS_Browser) ]
+  --[ BrowserServerSession(~browserID, $Server, ~client_ID_TLS_Browser) ]->
+    [ !St_Browser_Session(~browserID, $User, $Server, ~client_ID_TLS_Browser)
+    , !St_Server_Session($Server, ~client_ID_TLS_Browser) ]
+
+rule Hello_Client_TLS:
+    [ Fr(~client_ID_TLS) ]
+  -->
+    [ !St_Client_Session($Client, $Server, ~client_ID_TLS)
+    , !St_Server_Session($Server, ~client_ID_TLS) ]
+
+
+/* Adversary rules for TLS */
+// The adversary can initiate the connection to the server in his browser.
+rule Init_Adversary_TLS_Session[color= #f5b7b1]:
+    [ In($Server), Fr(~browserID), Fr(~browser_ID_TLS) ]
+  --[ AdversarySessionTLS(~browserID, $Adversary,  $Server, ~browser_ID_TLS), Compromised_Client(~browserID, $Adversary), AdversaryAction() ]->
+    [ !St_Browser_Session(~browserID, $Adversary, $Server, ~browser_ID_TLS)
+    , !St_Server_Session($Server, ~browser_ID_TLS)
+    , !Adversary_Session_TLS(~browserID, $Adversary, $Server, ~browser_ID_TLS) ]
+
+// The adversary can send data to the server in his browser.
+rule Send_Adversary_TLS[color= #f5b7b1]:
+    [ !Adversary_Session_TLS(~browserID, $Adversary, $Server, ~browser_ID_TLS)
+    , In(message) ]
+  --[ AdversarySends(~browser_ID_TLS, $Server, message), Compromised_Client(~browserID, $Adversary), AdversaryAction() ]->
+    [ !Client_to_Server_TLS(~browser_ID_TLS, $Server, message) ]
+
+// The adversary receives the data response from the server in his browser.
+rule Receive_Adversary_TLS[color= #f5b7b1]:
+    [ !Adversary_Session_TLS(browserID, $Adversary, $Server, browser_ID_TLS)
+    , !Server_to_Client_TLS($Server, browser_ID_TLS, message)  ]
+  --[ Adversary_receives(message, 'AuthResponse'), Compromised_Client(browserID, $Adversary), AdversaryAction() ]->
+    [ Out(message) ]
+
+/* In-Broswer Communication Channel Rules */
+// postMessage with targetOrigin
+rule ChanOut_PostMessage1:
+    [ Out_PostMessageWithOrigin($OriginServer,$TargetServer,originBrowserID,targetBrowserID,data) ]
+    --[ ChanOut_PostMessageWithOrigin($OriginServer,$TargetServer,originBrowserID,targetBrowserID,data) ]->
+    [ !PostMessageWithOrigin($OriginServer,$TargetServer,originBrowserID,targetBrowserID,data) ]
+
+rule ChanIn_PostMessage1:
+    [ !PostMessageWithOrigin($OriginServer,$TargetServer,originBrowserID,targetBrowserID,data) ]
+    --[ ChanIn_PostMessageWithOrigin($OriginServer,$TargetServer,originBrowserID,targetBrowserID,data) ]->
+    [ In_PostMessageWithOrigin($OriginServer,$TargetServer,originBrowserID,targetBrowserID,data) ]
+
+// postMessage with targetOrigin that is under the control of the adversary
+rule ChanOut_PostMessage1_Adv:
+    [ Out_PostMessageWithOrigin($OriginServer,$TargetServerAdv,originBrowserID,targetBrowserID,data) ]
+    --[ Adversary($TargetServerAdv), ChanOut_PostMessageWithOrigin($OriginServer,$TargetServerAdv,originBrowserID,targetBrowserID,data) ]->
+    [ !PostMessageWithOrigin($OriginServer,$TargetServerAdv,originBrowserID,targetBrowserID,data), Out(<$OriginServer,originBrowserID,targetBrowserID,data>) ]
+
+rule ChanIn_PostMessage1_Adv:
+    [ !PostMessageWithOrigin($OriginServer,$TargetServerAdv,originBrowserID,targetBrowserID,data) ]
+    --[ ChanIn_PostMessageWithOrigin($OriginServer,$TargetServerAdv,originBrowserID,targetBrowserID,data) ]->
+    [ In_PostMessageWithOrigin($OriginServer,$TargetServerAdv,originBrowserID,targetBrowserID,data) ]
+
+// postMessage without targetOrigin
+rule ChanOut_PostMessage2:
+    [ Out_PostMessageWithoutOrigin($OriginServer,originBrowserID,targetBrowserID,data) ]
+    --[ ChanOut_PostMessageWithoutOrigin($OriginServer,originBrowserID,targetBrowserID,data) ]->
+    [ !PostMessageWithoutOrigin($OriginServer,originBrowserID,targetBrowserID,data), Out(<$OriginServer,originBrowserID,targetBrowserID,data>) ]
+
+rule ChanIn_PostMessage2:
+    [ !PostMessageWithoutOrigin($OriginServer,originBrowserID,targetBrowserID,data) ]
+    --[ ChanIn_PostMessageWithoutOrigin($OriginServer,originBrowserID,targetBrowserID,data) ]->
+    [ In_PostMessageWithoutOrigin($OriginServer,originBrowserID,targetBrowserID,data) ]
+
+/* Public key infrastructure */
+rule Get_pk:
+    [ !Pk(A, pubkey) ]
+  -->
+    [ Out(pubkey) ]
+   
+rule IdP_Init:
+    [Fr(~ltk)]
+    --[Initialization_IdP($IdP)]->
+    [ !St_Init_IdP($IdP, ~ltk)
+    , !Pk($IdP, pk(~ltk))]
+
+rule RP_Init:
+    let sig = sign($RP, ~k, ~ltk) in
+    [ !St_Init_IdP($IdP, ~ltk)
+    , Fr(~k) ]
+    --[ Initialization_RP($RP), Not_an_R($RP) ]->
+    [ !St_Init_RP($RP, sig, ~k)]
+
+/* Protocol Rules */
+
+rule Init_Browser[color=  #f9e79f]:
+    [ Fr(~browserID) ]
+  -->
+    [ !St_Browser_Init(~browserID, $User) ]
+
+// Step 1. User requests RP
+rule User_starts_Session[color=  #f9e79f]:
+    [ !St_Browser_Session(~browserIDRP, $User, $RP, ~client_ID_TLS_Browser_RP)
+    , !St_Init_IdP($IdP, pk)
+    ]
+    --[ UserStarts(~browserIDRP, $RP, $IdP), TrustUser($User) ]->
+    [ !Client_to_Server_TLS(~client_ID_TLS_Browser_RP, $RP, <'loginWith', $IdP>)
+    , St_Browser_RP_1(~browserIDRP, $RP, ~client_ID_TLS_Browser_RP)]
+
+
+// Step 2. RP returns the acid and opens a new window for submission to IdP
+rule Request_RP[color=  #aed6f1]:
+    let
+    h = p ^ ~k
+    acid = randomize(sig, h, ~t)
+    in
+    [ !Client_to_Server_TLS(~client_ID_TLS_Browser_RP, $RP, <'loginWith', $IdP>)
+    , !St_Server_Session($RP, ~client_ID_TLS_Browser_RP)
+    , !St_Init_RP($RP, sig, p)
+    , !St_Init_IdP($IdP, pk)
+    , Fr(~k), Fr(~t)
+    ]
+    --[ Send_To_R($RP, $IdP) ]->
+    [ !Server_to_Client_TLS($RP, ~client_ID_TLS_Browser_RP, <'openWindow', $IdP, 'acid', acid, 't', ~t>)
+    ]
+
+// Step 3. Browser operation: popup a new window with acid
+rule OpenWindowIdP[color=  #f9e79f]:
+    [ !Server_to_Client_TLS($RP, ~client_ID_TLS_Browser_RP, <'openWindow', $IdP, 'acid', acid, 't', ~t>)
+    , !St_Browser_Session(~browserIDRP, $User, $RP, ~client_ID_TLS_Browser_RP)
+    , !St_Browser_Session(~browserIDIdP, $User, $IdP, ~client_ID_TLS_Browser_IdP)
+    , St_Browser_RP_1(~browserIDRP, $RP, ~client_ID_TLS_Browser_RP)
+    ]
+    --[ Neq(~browserIDRP, ~browserIDIdP) ]->
+    [ !Client_to_Server_TLS(~client_ID_TLS_Browser_IdP, $IdP, <'IdP_index', 'acid', acid>)
+    , St_Browser_IdP_1(~browserIDIdP, ~client_ID_TLS_Browser_IdP, $IdP, ~browserIDRP)
+    , St_Browser_RP_2(~browserIDRP, $RP, ~client_ID_TLS_Browser_RP, ~browserIDIdP, $IdP, acid, ~t)
+    ]
+
+// Step 4. Request and load IdP document in the popup window
+rule Request_IdP[color=  #aed6f1]:
+    [ !Client_to_Server_TLS(~client_ID_TLS_Browser_IdP, $IdP, <'IdP_index', 'acid', acid>)
+    , !St_Server_Session($IdP, ~client_ID_TLS_Browser_IdP) 
+    , !St_Init_IdP($IdP, ~ltk)
+    ]
+    --[ PublicDVF($DVF) ]->
+    [ !Server_to_Client_TLS($IdP, ~client_ID_TLS_Browser_IdP, <'addIframe', $DVF, 'acid', acid>)]
+
+// Step 5-1. IdP add the DVF iframe
+rule IdP_Window_Add_Iframe[color=  #f9e79f]:
+    [ !Server_to_Client_TLS($IdP, ~client_ID_TLS_Browser_IdP, <'addIframe', $DVF, 'acid', acid>)
+    , !St_Browser_Session(~browserIDIdP, $User, $IdP, ~client_ID_TLS_Browser_IdP)
+    , !St_Browser_Session(~browserIDDVF, $User, $DVF, ~client_ID_TLS_Browser_DVF)
+    , St_Browser_IdP_1(~browserIDIdP, ~client_ID_TLS_Browser_IdP, $IdP, ~browserIDRP)
+    , St_Browser_RP_2(~browserIDRP, $RP, ~client_ID_TLS_Browser_RP, ~browserIDIdP, $IdP, acid, ~t)
+    ]
+    --[ Neq(~browserIDDVF, ~browserIDRP) ,Neq(~browserIDDVF, ~browserIDIdP) ]->
+    [ !Client_to_Server_TLS(~client_ID_TLS_Browser_DVF, $DVF, 'DVF_index')
+    , St_Browser_IdP_2(~browserIDIdP, ~client_ID_TLS_Browser_IdP, $IdP, ~browserIDRP, ~browserIDDVF, $DVF, 'addListener')
+    , St_Browser_DVF_1(~browserIDDVF, ~client_ID_TLS_Browser_DVF, $DVF, ~browserIDIdP, $IdP, ~browserIDRP, acid)
+    , St_Browser_RP_3(~browserIDRP, $RP, ~client_ID_TLS_Browser_RP, ~browserIDIdP, ~browserIDDVF, $IdP, acid, ~t)
+    ]
+
+// Step 5-2. Request and load DVF document in DVF iframe
+rule Reuqest_DVF:
+    [ !Client_to_Server_TLS(~client_ID_TLS_Browser_DVF, $DVF, 'DVF_index')
+    , !St_Server_Session($DVF, ~client_ID_TLS_Browser_DVF) ]
+    --[ PublicDVF($DVF) ]->
+    [
+      !Server_to_Client_TLS($DVF, ~client_ID_TLS_Browser_DVF, <'DVFVerifyScript'>)
+    ]
+
+// Step 5-3. The DVF document send a 'start' message to the RP window via postMessage without targetOrigin
+rule DVF_Verify_Start:
+    [ !Server_to_Client_TLS($DVF, ~client_ID_TLS_Browser_DVF, <'DVFVerifyScript'>)
+    , !St_Browser_Session(~browserIDDVF, $User, $DVF, ~client_ID_TLS_Browser_DVF)
+    , St_Browser_DVF_1(~browserIDDVF, ~client_ID_TLS_Browser_DVF, $DVF, ~browserIDIdP, $IdP, ~browserIDRP, acid)
+    ]
+    -->
+    [ Out_PostMessageWithoutOrigin($DVF, ~browserIDDVF, ~browserIDRP, 'start')
+    , St_Browser_DVF_2(~browserIDDVF, ~client_ID_TLS_Browser_DVF, $DVF, ~browserIDIdP, $IdP, ~browserIDRP, acid, 'addListener')
+    ]
+
+// Step 6. The RP window set parament t to DVF iframe via postMessage with targetOrigin
+rule RP_Browser_Post_Sig[color=  #f9e79f]:
+    [ In_PostMessageWithoutOrigin($DVF, ~browserIDDVF, ~browserIDRP, 'start')
+    , St_Browser_RP_3(~browserIDRP, $RP, ~client_ID_TLS_Browser_RP, ~browserIDIdP, ~browserIDDVF, $IdP, acid, ~t)
+    ]
+    --[ PublicDVF($DVF) ]->
+    [ Out_PostMessageWithOrigin($RP, $DVF, ~browserIDRP, ~browserIDDVF, ~t)
+    , St_Browser_RP_4(~browserIDRP, $RP, ~client_ID_TLS_Browser_RP, ~browserIDIdP, ~browserIDDVF, $IdP, acid, ~t, 'addListener') ]
+
+// Step 7. The DVF document verifies the RP identity，sned the result to the IdP window via postMessage with targetOrigin
+rule DVF_Browser_Get_Sig[color=  #f9e79f]:
+    [ In_PostMessageWithOrigin($RP, $DVF, ~browserIDRP, ~browserIDDVF, ~t)
+    , St_Browser_DVF_2(~browserIDDVF, ~client_ID_TLS_Browser_DVF, $DVF, ~browserIDIdP, $IdP, ~browserIDRP, acid, 'addListener')
+    , !Pk($IdP, pkIdP)
+    ]
+    --[ Eq(verify(invrandomize(acid, ~t), $RP, pkIdP), true), ShowUserRPName($RP) ]->
+    [ Out_PostMessageWithOrigin($DVF, $IdP, ~browserIDDVF, ~browserIDIdP, 'ok')
+    , St_Browser_DVF_3(~browserIDDVF, ~client_ID_TLS_Browser_DVF, $DVF, ~browserIDIdP, $IdP, ~browserIDRP, acid, $RP, 'addListener') ]
+
+// Step 8. IdP window request the IdP server generate the code for this SSO session
+rule IdP_Browser_Get_Result[color=  #f9e79f]:
+    [ In_PostMessageWithOrigin($DVF, $IdP, ~browserIDDVF, ~browserIDIdP,  'ok')
+    , St_Browser_IdP_2(~browserIDIdP, ~client_ID_TLS_Browser_IdP, $IdP, ~browserIDRP, ~browserIDDVF, $DVF, 'addListener')
+    , !St_Browser_Session(~browserIDIdP, $User, $IdP, ~client_ID_TLS_Browser_IdP)
+    ]
+    -->
+    [ !Client_to_Server_TLS(~client_ID_TLS_Browser_IdP, $IdP, 'GenCode')
+    , St_Browser_IdP_3(~browserIDIdP, ~client_ID_TLS_Browser_IdP, $IdP, ~browserIDRP, ~browserIDDVF, $DVF) ]
+
+// Step 9. The IdP server generate the code, return to the IdP window
+rule Request_Code_IdP:
+    [ !Client_to_Server_TLS(~client_ID_TLS_Browser_IdP, $IdP, 'GenCode')
+    , !St_Server_Session($IdP, ~client_ID_TLS_Browser_IdP) 
+    , !St_Init_IdP($IdP, ~ltk)
+    , Fr(~code)
+    ]
+    --[ IdP_Gen_Code($IdP, ~code) ]->
+    [ !Server_to_Client_TLS($IdP, ~client_ID_TLS_Browser_IdP, <'code', ~code>)]
+
+// Step 10. The IdP window send the code to DVF iframe via postMessage with targetOrigin
+rule IdP_Browser_Postmessage_Code:
+    [ !Server_to_Client_TLS($IdP, ~client_ID_TLS_Browser_IdP, <'code', ~code>)
+    , !St_Browser_Session(~browserIDIdP, $User, $IdP, ~client_ID_TLS_Browser_IdP)
+    , St_Browser_IdP_3(~browserIDIdP, ~client_ID_TLS_Browser_IdP, $IdP, ~browserIDRP, ~browserIDDVF, $DVF)
+    ]
+    -->
+    [ Out_PostMessageWithOrigin($IdP, $DVF, ~browserIDIdP, ~browserIDDVF, ~code)
+    ]
+
+// Step 11. The DVF iframe forward the code to the RP window via postMessage with targetOrigin
+rule DVF_Browser_Postmessage_Code:
+    [ In_PostMessageWithOrigin($IdP, $DVF, ~browserIDIdP, ~browserIDDVF, ~code)
+    , St_Browser_DVF_3(~browserIDDVF, ~client_ID_TLS_Browser_DVF, $DVF, ~browserIDIdP, $IdP, ~browserIDRP, acid, $RP, 'addListener')    
+    ]
+    -->
+    [ Out_PostMessageWithOrigin($DVF, $RP, ~browserIDDVF, ~browserIDRP, ~code)
+    ]
+
+// Step 11. The RP window send the code to the RP server
+rule RP_Send_Code[color=  #f9e79f]:
+    [ In_PostMessageWithOrigin($DVF, $RP, ~browserIDDVF, ~browserIDRP, ~code)
+    , !St_Browser_Session(~browserIDRP, $User, $RP, ~client_ID_TLS_Browser_RP)
+    , St_Browser_RP_4(~browserIDRP, $RP, ~client_ID_TLS_Browser_RP, ~browserIDIdP, ~browserIDDVF, $IdP, acid, ~t, 'addListener')
+    ]
+    -->
+    [ !Client_to_Server_TLS(~client_ID_TLS_Browser_RP, $RP, ~code)]
+
+// Step 12. The RP server receives the code
+rule RP_Get_Code[color=  #aed6f1]:
+    [ !Client_to_Server_TLS(~client_ID_TLS_Browser_RP, $RP, ~code)
+    , !St_Server_Session($RP, ~client_ID_TLS_Browser_RP)
+    ]
+    --[ RP_Know($RP, ~code) ]->
+    []
+
+/*Restriction*/
+// DVF is a unique and definite server, and not an adversary
+restriction DVF_Is_Not_Compromised:
+    "(All dvf #i #j. PublicDVF(dvf) @i & Adversary(dvf) @j ==> F) & ( All dvf1 dvf2 #i #j. (PublicDVF(dvf1)@i & PublicDVF(dvf2)@j) ==> dvf1 = dvf2)"
+
+restriction equality:
+    "All x y #i. Eq(x, y) @ i ==> x = y"
+
+
+restriction Initializes_R_Once:
+    " All a #i #j. (Initialization_IdP(a)@i & Initialization_IdP(a)@j)
+    ==> (#i = #j)
+    " 
+
+restriction registered_I_shouldnt_be_an_R:
+    "All I #i. Not_an_R(I)@i ==> not(Ex #j. Initialization_IdP(I)@j)"
+
+
+restriction R_is_not_Adversary:
+    "All I R #k. Send_To_R(I, R)@k ==> not( Ex #i. Adversary(R)@i) & not (Ex #j. Adversary(I)@j) "
+
+// 强的假设，攻击者不能直接请求R，因为本协议主要用于确保浏览器中不会泄漏秘密
+// 对应场景为I和R在安全内网中
+restriction No_Adversary_Direct_Communicate_With_R:
+    "All id Adversary #i. AdversarySends(id, Adversary, 'GenCode')@i ==> F"
+
+// The user is trustworthy, neither does the user steal his own code
+restriction TrustUser:
+    "All browserID Adversary #i #j. Compromised_Client(browserID, Adversary)@i & TrustUser(Adversary)@j ==> F"
+
+restriction Inequality:
+    "All x #i. Neq(x,x) @ #i ==> F"
+
+// The protocol is executable
+// #ifdef timethis
+lemma executable:
+    exists-trace
+      " Ex code rp idp #finish #gen. RP_Know(rp, code)@finish
+      & IdP_Gen_Code(idp, code)@gen
+      & (All x y #i #j. (Initialization_IdP(x)@i & Initialization_IdP(y)@j) ==> x = y)
+      & (All i1 i2 #i #j. (Initialization_RP(i1)@i & Initialization_RP(i2)@j) ==> i1 = i2)
+      & (All u1 u2 #i #j. (UserStarts(u1, rp, idp)@i & UserStarts(u2, rp, idp)@j) ==> u1 = u2 & #i = #j)
+      & (not(Ex #i. AdversaryAction()@i))
+      "
+// #endif
+
+// After the protocol execution is completed, the RP server receives the code generated by the IdP server, and this process does not leak the code to any adversaries
+// #ifdef timethis
+lemma secrecy:
+    "
+    All code rp idp #finish #gen. RP_Know(rp, code)@finish 
+    & IdP_Gen_Code(idp, code)@gen
+    & (All u1 u2 #i #j. (UserStarts(u1, rp, idp)@i & UserStarts(u2, rp, idp)@j) ==> u1 = u2 & #i = #j)
+    & gen < finish
+    ==> 
+    not(Ex #k. !KU(code)@k & gen<k)     
+    "
+// #endif
+end
