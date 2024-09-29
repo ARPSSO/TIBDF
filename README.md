@@ -6,7 +6,7 @@
   <p align="center">
     The proof for in-browser data forwarding trustworthiness in ARPSSO.
     <br />
-    <a href="https://arpsso.live/"><strong>View ARPSSO Demo »</strong></a>
+    <a href="https://arpsso.hejunlin.cn"><strong>View ARPSSO Demo »</strong></a>
   </p>
 </div>
 
